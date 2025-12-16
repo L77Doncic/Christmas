@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Controlled Christmas Magic</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #D4AF37; /* Metallic Gold */
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #video-input {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 160px;
+            height: 120px;
+            transform: scaleX(-1); /* Mirror */
+            border: 2px solid #D4AF37;
+            border-radius: 10px;
+            z-index: 10;
+            opacity: 0.7;
+            display: block; /* Keeping it visible for debug/feedback, can be hidden */
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 20;
+            pointer-events: none; /* Let clicks pass through to canvas if needed */
+        }
+        h1 {
+            margin: 0;
+            font-weight: 300;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            text-shadow: 0 0 10px #D4AF37;
+        }
+        .controls {
+            margin-top: 15px;
+            pointer-events: auto;
+        }
+        .btn {
+            background: linear-gradient(135deg, #8B0000, #3a0000);
+            border: 1px solid #D4AF37;
+            color: #D4AF37;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s;
+            box-shadow: 0 0 10px rgba(212, 175, 55, 0.2);
+        }
+        .btn:hover {
+            box-shadow: 0 0 20px rgba(212, 175, 55, 0.6);
+            background: #a00000;
+        }
+        #status {
+            margin-top: 10px;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        /* Loading Overlay */
+        #loader {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: #D4AF37;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loader">初始化魔法引擎 (需摄像头权限)...</div>
+
+    <div id="ui-layer">
+        <h1>XMAS GESTURE MAGIC</h1>
+        <div id="status">等待手势... (握拳: 树 | 张开: 散开 | 食指: 选取)</div>
+        <div class="controls">
+            <input type="file" id="upload-photo" multiple accept="image/*" style="display: none;">
+            <button class="btn" onclick="document.getElementById('upload-photo').click()">上传记忆照片</button>
+        </div>
+    </div>
+
+    <!-- MediaPipe requires a video element -->
+    <video id="video-input" playsinline></video>
+    <div id="canvas-container"></div>
+
+    <!-- Import Maps for Three.js and MediaPipe -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "@mediapipe/hands": "https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js",
+                "@mediapipe/camera_utils": "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- Configuration ---
+        const COLORS = {
+            green: 0x2F5A46, // Matte Green
+            gold: 0xD4AF37,  // Metallic Gold
+            red: 0x8B0000,   // Christmas Red
+            white: 0xEEEEEE
+        };
+
+        const STATE = {
+            TREE: 'tree',
+            SCATTER: 'scatter'
+        };
+
+        let currentState = STATE.TREE;
+        let particles = [];
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2(); // Will be controlled by hand index finger
+        let handDetected = false;
+
+        // --- Three.js Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.002);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 15, 40);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.toneMapping = THREE.ReinhardToneMapping;
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.5;
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+        scene.add(ambientLight);
+
+        const pointLight = new THREE.PointLight(COLORS.gold, 2, 100);
+        pointLight.position.set(10, 20, 10);
+        scene.add(pointLight);
+
+        const redLight = new THREE.PointLight(COLORS.red, 2, 80);
+        redLight.position.set(-10, 5, -10);
+        scene.add(redLight);
+
+        // --- Post Processing (Bloom/Glow) ---
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = 0.1;
+        bloomPass.strength = 1.2; // High glow for cinematic feel
+        bloomPass.radius = 0.5;
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- Particle System ---
+        
+        // Geometry Prototypes to reuse
+        const geoSphere = new THREE.SphereGeometry(0.5, 16, 16);
+        const geoBox = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+        const geoCylinder = new THREE.CylinderGeometry(0.1, 0.1, 2, 8); // For candy canes
+
+        // Materials
+        const matGold = new THREE.MeshStandardMaterial({ 
+            color: COLORS.gold, metalness: 0.9, roughness: 0.1, emissive: 0x222200 
+        });
+        const matGreen = new THREE.MeshStandardMaterial({ 
+            color: COLORS.green, metalness: 0.1, roughness: 0.9 
+        });
+        const matRed = new THREE.MeshStandardMaterial({ 
+            color: COLORS.red, metalness: 0.3, roughness: 0.4, emissive: 0x330000
+        });
+
+        class Particle {
+            constructor(type, texture = null) {
+                this.type = type; // 'sphere', 'box', 'cane', 'photo'
+                this.mesh = null;
+                
+                // Create Mesh based on type
+                if (type === 'photo' && texture) {
+                    const aspect = texture.image.width / texture.image.height;
+                    const geoPlane = new THREE.PlaneGeometry(3 * aspect, 3);
+                    const matPhoto = new THREE.MeshBasicMaterial({ 
+                        map: texture, side: THREE.DoubleSide 
+                    });
+                    this.mesh = new THREE.Mesh(geoPlane, matPhoto);
+                    this.isPhoto = true;
+                } else if (type === 'cane') {
+                    this.mesh = new THREE.Mesh(geoCylinder, matRed);
+                    this.mesh.rotation.z = Math.random() * Math.PI;
+                    this.isPhoto = false;
+                } else {
+                    const geo = Math.random() > 0.5 ? geoSphere : geoBox;
+                    const mat = Math.random() > 0.7 ? matGold : (Math.random() > 0.5 ? matRed : matGreen);
+                    this.mesh = new THREE.Mesh(geo, mat);
+                    this.isPhoto = false;
+                }
+
+                // Initial Random Position (Scatter state)
+                this.scatterPos = new THREE.Vector3(
+                    (Math.random() - 0.5) * 60,
+                    (Math.random() - 0.5) * 40 + 10,
+                    (Math.random() - 0.5) * 60
+                );
+
+                // Tree Position (Target 1)
+                this.treePos = new THREE.Vector3();
+                this.calculateTreePos();
+
+                this.mesh.position.copy(this.treePos); // Start at Tree
+                this.targetPos = this.treePos;
+                
+                // Animation properties
+                this.velocity = new THREE.Vector3();
+                this.hoverScale = 1;
+                this.baseScale = this.isPhoto ? 1 : (Math.random() * 0.5 + 0.5);
+                this.mesh.scale.setScalar(this.baseScale);
+
+                scene.add(this.mesh);
+            }
+
+            calculateTreePos() {
+                // Cone logic: radius depends on height
+                const height = 30;
+                const y = Math.random() * height; // 0 to 30
+                const percent = 1 - (y / height); // 1 at bottom, 0 at top
+                const radius = percent * 10; // Max radius 10
+                const angle = Math.random() * Math.PI * 2;
+                
+                // Add some noise so it's not a perfect cone shell
+                const r = Math.random() * radius; 
+                
+                this.treePos.set(
+                    r * Math.cos(angle),
+                    y - 10, // Center vertically
+                    r * Math.sin(angle)
+                );
+            }
+
+            update(dt, interactMouse) {
+                // State Logic
+                if (currentState === STATE.TREE) {
+                    this.targetPos = this.treePos;
+                    // Reset rotation for photos in tree mode
+                    if(this.isPhoto) {
+                        this.mesh.lookAt(0, this.mesh.position.y, 0); 
+                    } else {
+                        this.mesh.rotation.y += dt;
+                    }
+                } else {
+                    this.targetPos = this.scatterPos;
+                    this.mesh.rotation.x += dt * 0.5;
+                    this.mesh.rotation.y += dt * 0.5;
+                }
+
+                // Movement Interpolation (Lerp)
+                this.mesh.position.lerp(this.targetPos, dt * 2); // Smooth transition
+
+                // Interaction Logic (Photo Zoom)
+                if (this.isPhoto && currentState === STATE.SCATTER) {
+                    // Check intersection
+                    if (interactMouse) {
+                        // Simple distance check to the projected ray for visual feedback
+                        // Real raycasting happens in main loop, here we handle scale effect
+                        if (this.mesh.userData.isHovered) {
+                            // Zoom Effect
+                            const camDir = new THREE.Vector3();
+                            camera.getWorldDirection(camDir);
+                            // Move slightly towards camera
+                            const popPos = this.scatterPos.clone().add(camDir.multiplyScalar(-5));
+                            this.mesh.position.lerp(popPos, dt * 5);
+                            this.mesh.scale.lerp(new THREE.Vector3(3, 3, 3), dt * 5);
+                            this.mesh.lookAt(camera.position);
+                        } else {
+                            this.mesh.scale.lerp(new THREE.Vector3(1, 1, 1), dt * 5);
+                        }
+                    } else {
+                        this.mesh.scale.lerp(new THREE.Vector3(1, 1, 1), dt * 5);
+                    }
+                }
+                
+                // Reset Hover flag for next frame
+                this.mesh.userData.isHovered = false;
+            }
+        }
+
+        // Initialize Base Particles
+        function initParticles() {
+            for (let i = 0; i < 200; i++) {
+                particles.push(new Particle('basic'));
+            }
+            for (let i = 0; i < 20; i++) {
+                particles.push(new Particle('cane'));
+            }
+        }
+        initParticles();
+
+        // Photo Upload Handler
+        document.getElementById('upload-photo').addEventListener('change', (e) => {
+            const files = e.target.files;
+            const loader = new THREE.TextureLoader();
+
+            Array.from(files).forEach(file => {
+                const url = URL.createObjectURL(file);
+                loader.load(url, (texture) => {
+                    const p = new Particle('photo', texture);
+                    particles.push(p);
+                });
+            });
+        });
+
+        // --- MediaPipe Hands Setup ---
+        const videoElement = document.getElementById('video-input');
+        const statusDiv = document.getElementById('status');
+        
+        // Dynamically load MediaPipe script logic via global objects provided by script imports
+        // Note: In a real project, NPM + Bundler is better, but here we use Global CDN objects.
+        
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: 320, height: 240 }
+            });
+            videoElement.srcObject = stream;
+            return new Promise((resolve) => {
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play();
+                    resolve(videoElement);
+                };
+            });
+        }
+
+        async function initMediaPipe() {
+            // Wait for globals to be available
+            // Note: The imports in <script type="importmap"> are for modules.
+            // But MediaPipe CDN often exposes global 'window.Hands'.
+            // If using the module version, we need to import it properly.
+            // Let's use the dynamic import from the map.
+            
+            const { Hands } = await import('@mediapipe/hands');
+            const { Camera } = await import('@mediapipe/camera_utils');
+
+            const hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
+            });
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+
+            const cameraUtils = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 320,
+                height: 240
+            });
+            cameraUtils.start();
+            
+            document.getElementById('loader').style.opacity = '0';
+            setTimeout(() => document.getElementById('loader').style.display = 'none', 500);
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handDetected = true;
+                const landmarks = results.multiHandLandmarks[0];
+
+                // 1. Gesture Recognition
+                // Simple logic: Is hand open or closed?
+                // Check if finger tips are above finger PIP joints (approximate for upright hand)
+                // Or calculate distance between Index Tip and Thumb Tip.
+
+                // Index Finger Tip: 8, Thumb Tip: 4, Wrist: 0
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                const middleTip = landmarks[12];
+                const ringTip = landmarks[16];
+                const pinkyTip = landmarks[20];
+                const wrist = landmarks[0];
+
+                // Count extended fingers (simple y-check relative to wrist isn't perfect but works for "Stop" pose)
+                // Better: Check distance from palm center (0, 5, 9, 13, 17 avg) to tips.
+                
+                // Let's use a simpler heuristic for Open vs Fist:
+                // If Index, Middle, Ring, Pinky tips are far from wrist -> Open.
+                // Distance check:
+                function dist(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
+                
+                const dIndex = dist(indexTip, wrist);
+                const dMiddle = dist(middleTip, wrist);
+                const dRing = dist(ringTip, wrist);
+                const dPinky = dist(pinkyTip, wrist);
+                
+                // Thresholds usually around 0.3 - 0.4 for open hand
+                const isOpen = (dIndex > 0.3 && dMiddle > 0.3 && dRing > 0.3);
+                
+                if (isOpen) {
+                    currentState = STATE.SCATTER;
+                    controls.autoRotate = false; // Stop rotating so user can point
+                    statusDiv.innerText = "状态: 散开 (食指可选取照片)";
+                    statusDiv.style.color = "#FF4444";
+                } else {
+                    currentState = STATE.TREE;
+                    controls.autoRotate = true;
+                    statusDiv.innerText = "状态: 圣诞树 (握拳聚合)";
+                    statusDiv.style.color = "#D4AF37";
+                }
+
+                // 2. Cursor Control (Index Finger)
+                // Map coordinates (0-1) to Normalised Device Coordinates (-1 to +1)
+                // MediaPipe x is 0(left) to 1(right). In camera mirror mode, we need to flip X?
+                // Video is mirrored via CSS, but landmarks match the original image unless we process flip.
+                // Usually landmarks.x needs `1 - x` if the video feels mirrored to user.
+                
+                const ndcX = (1 - indexTip.x) * 2 - 1; // Flip X
+                const ndcY = -(indexTip.y * 2 - 1); // Flip Y (Web coords down, GL up)
+                
+                mouse.set(ndcX, ndcY);
+
+            } else {
+                handDetected = false;
+                // No hand? Default to Tree and nice rotation
+                currentState = STATE.TREE;
+                controls.autoRotate = true;
+                statusDiv.innerText = "未检测到手势 - 自动展示";
+                statusDiv.style.color = "#888";
+            }
+        }
+
+        // --- Main Loop ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const dt = clock.getDelta();
+
+            // Raycasting for Photos
+            if (currentState === STATE.SCATTER && handDetected) {
+                raycaster.setFromCamera(mouse, camera);
+                // Filter only photo meshes
+                const photoMeshes = particles.filter(p => p.isPhoto).map(p => p.mesh);
+                const intersects = raycaster.intersectObjects(photoMeshes);
+
+                if (intersects.length > 0) {
+                    // Mark the closest one as hovered
+                    intersects[0].object.userData.isHovered = true;
+                    document.body.style.cursor = 'pointer';
+                } else {
+                    document.body.style.cursor = 'default';
+                }
+            }
+
+            // Update Particles
+            particles.forEach(p => p.update(dt, currentState === STATE.SCATTER));
+
+            controls.update();
+            composer.render();
+        }
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Initialize
+        setupCamera().then(() => {
+            initMediaPipe();
+            animate();
+        });
+
+    </script>
+</body>
+</html>
