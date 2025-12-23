@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Dreamy Christmas - Fixed</title>
+    <title>Merry Christmas!!!</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="favicon.svg">
+    <meta name="theme-color" content="#020205">
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,11 +36,69 @@
             text-shadow: 0 0 5px #FFD700;
             z-index: 10;
         }
+        /* 音乐控制样式 */
+        #music-controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.01);
+            padding: 8px 15px;
+            border-radius: 30px;
+            backdrop-filter: blur(5px);
+        }
+        #music-toggle {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #FFD700;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #020205;
+            font-size: 18px;
+            transition: all 0.3s ease;
+        }
+        #music-toggle:hover {
+            background: #fff;
+            transform: scale(1.05);
+        }
+        #volume-slider {
+            width: 80px;
+            accent-color: #FFD700;
+            cursor: pointer;
+        }
+        /* 首次点击提示 */
+        #click-to-play {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #FFD700;
+            font-size: 20px;
+            text-align: center;
+            text-shadow: 0 0 10px #FFD700;
+            z-index: 15;
+            opacity: 1;
+            transition: opacity 0.5s ease;
+        }
     </style>
 </head>
 <body>
     <div id="instructions">点击切换<br>Tap: Classic -> Galaxy Tree -> Gift Box</div>
+    <div id="click-to-play">点击屏幕开始播放音乐 🎵</div>
     <canvas id="canvas"></canvas>
+    
+    <!-- 音乐控制组件 -->
+    <div id="music-controls">
+        <button id="music-toggle">▶️</button>
+        <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="0.7">
+    </div>
 
     <script>
         const canvas = document.getElementById('canvas');
@@ -65,6 +126,68 @@
         const BOTTOM_Y = 250; 
         const FOV = 400;
         const PARTICLE_COUNT = 3000; 
+
+        // 音乐相关变量
+        let audio = null;
+        let isMusicPlaying = false;
+        const clickToPlay = document.getElementById('click-to-play');
+        const musicToggle = document.getElementById('music-toggle');
+        const volumeSlider = document.getElementById('volume-slider');
+
+        // 初始化音频
+        function initAudio() {
+            // 使用的圣诞背景音乐（替换为你喜欢的链接）
+            audio = new Audio('Christmas_list.mp3');
+            audio.loop = true; // 循环播放
+            audio.volume = parseFloat(volumeSlider.value);
+            
+            // 音量控制
+            volumeSlider.addEventListener('input', () => {
+                audio.volume = parseFloat(volumeSlider.value);
+            });
+            
+            // 播放/暂停控制
+            musicToggle.addEventListener('click', toggleMusic);
+            
+            // 页面点击触发音频播放（解决自动播放限制）
+            document.addEventListener('click', startMusicOnClick, { once: true });
+        }
+
+        // 点击开始播放音乐
+        function startMusicOnClick() {
+            if (!isMusicPlaying && audio) {
+                audio.play()
+                    .then(() => {
+                        isMusicPlaying = true;
+                        musicToggle.textContent = '⏸️';
+                        clickToPlay.style.opacity = 0;
+                        setTimeout(() => {
+                            clickToPlay.style.display = 'none';
+                        }, 500);
+                    })
+                    .catch(err => {
+                        console.log('播放失败:', err);
+                    });
+            }
+        }
+
+        // 切换播放/暂停
+        function toggleMusic() {
+            if (!audio) return;
+            
+            if (isMusicPlaying) {
+                audio.pause();
+                musicToggle.textContent = '▶️';
+            } else {
+                audio.play()
+                    .then(() => {
+                        musicToggle.textContent = '⏸️';
+                        clickToPlay.style.opacity = 0;
+                    })
+                    .catch(err => console.log('播放失败:', err));
+            }
+            isMusicPlaying = !isMusicPlaying;
+        }
 
         class Particle {
             constructor(index) {
@@ -292,6 +415,9 @@
             particles = []; ribbons = [];
             for (let i = 0; i < PARTICLE_COUNT; i++) particles.push(new Particle(i));
             for (let i = 0; i < 12; i++) ribbons.push(new Ribbon(i * -50));
+            
+            // 初始化音频
+            initAudio();
         }
 
         let time = 0;
